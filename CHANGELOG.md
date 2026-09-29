@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- `Password` wipes its bytes when dropped (`zeroize`), and its `Debug` output is `Password([REDACTED])`.
+  `AesEncoderOptions` inherits both through its `password` field.
+- The `aes256` feature enables `zeroize` in `aes`, `cbc` and `sha2`, so the AES key schedule, the IV and the
+  key-derivation hash state are wiped when dropped. The derived AES key is wiped after use.
+
 ### Fixed
 
 - Fix decoding large files under 32-bit systems
