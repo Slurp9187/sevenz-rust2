@@ -10,6 +10,7 @@ use aes::{
     cipher::{BlockModeDecrypt, KeyIvInit, array::Array},
 };
 use sha2::Digest;
+use zeroize::Zeroizing;
 
 use crate::Password;
 #[cfg(feature = "compress")]
@@ -128,7 +129,10 @@ impl<R: Read + Seek> Seek for Aes256Sha256Decoder<R> {
     }
 }
 
-fn get_aes_key(properties: &[u8], password: &[u8]) -> Result<([u8; 32], [u8; 16]), crate::Error> {
+fn get_aes_key(
+    properties: &[u8],
+    password: &[u8],
+) -> Result<(Zeroizing<[u8; 32]>, [u8; 16]), crate::Error> {
     let properties = match properties.len() {
         0 => {
             return Err(crate::Error::other("AES256 properties too short"));
@@ -162,7 +166,7 @@ fn get_aes_key(properties: &[u8], password: &[u8]) -> Result<([u8; 32], [u8; 16]
         // "Raw key" mode: the 32-byte key is `salt` followed by the password (both
         // truncated to fit). `salt_size` is at most 16, so copy only that prefix.
         // `aes_key.copy_from_slice(&salt)` would panic on the 32-vs-<=16 length mismatch.
-        let mut aes_key = [0u8; 32];
+        let mut aes_key = Zeroizing::new([0u8; 32]);
         aes_key[..salt_size].copy_from_slice(&salt[..salt_size]);
         let n = password.len().min(aes_key.len() - salt_size);
         aes_key[salt_size..n + salt_size].copy_from_slice(&password[0..n]);
@@ -176,7 +180,7 @@ fn get_aes_key(properties: &[u8], password: &[u8]) -> Result<([u8; 32], [u8; 16]
                 "AES num_cycles_power exceeds the supported maximum",
             ));
         }
-        derive_key_cached(num_cycles_power, &salt, password)
+        Zeroizing::new(derive_key_cached(num_cycles_power, &salt, password))
     };
     Ok((aes_key, iv))
 }
@@ -238,7 +242,7 @@ impl Cipher {
     fn from_properties(properties: &[u8], password: &[u8]) -> Result<Self, crate::Error> {
         let (aes_key, iv) = get_aes_key(properties, password)?;
         Ok(Self {
-            dec: Aes256CbcDec::new(&Array::from(aes_key), &iv.into()),
+            dec: Aes256CbcDec::new((&*aes_key).into(), &iv.into()),
             buf: Default::default(),
         })
     }
@@ -309,7 +313,7 @@ impl<W> Aes256Sha256Encoder<W> {
 
         Ok(Self {
             output,
-            enc: Aes256CbcEnc::new(&Array::from(key), &iv.into()),
+            enc: Aes256CbcEnc::new((&*key).into(), &iv.into()),
             buffer: Default::default(),
             finished: false,
             write_size: 0,
