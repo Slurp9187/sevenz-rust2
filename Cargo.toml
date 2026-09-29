@@ -14,8 +14,8 @@ version = "0.23.0"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["aes256", "bzip2", "compress", "ppmd", "util"]
-default_wasm = ["aes256_wasm", "bzip2", "compress", "ppmd", "util"]
+default = ["aes256", "bzip2", "compress", "key-cache", "ppmd", "util"]
+default_wasm = ["aes256_wasm", "bzip2", "compress", "key-cache", "ppmd", "util"]
 nt-time = ["dep:nt-time"]
 aes256 = ["dep:aes", "dep:cbc", "dep:getrandom", "dep:sha2", "aes/zeroize", "cbc/zeroize", "sha2/zeroize"]
 aes256_wasm = ["aes256", "getrandom/wasm_js"]
@@ -23,6 +23,9 @@ brotli = ["dep:brotli"]
 bzip2 = ["dep:bzip2"]
 compress = ["lzma-rust2/encoder"]
 deflate = ["dep:flate2"]
+# Reuse the last derived AES key when the salt and password repeat. The key stays in a
+# process-lifetime static and is never wiped; turn this off where that matters.
+key-cache = []
 lz4 = ["dep:lz4_flex"]
 ppmd = ["dep:ppmd-rust"]
 util = []
