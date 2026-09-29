@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `key-cache` feature, on by default, gating the cache of the last derived AES key. That cache lives in a `static`
+  for the life of the process and is never wiped; applications that hold passwords in memory with care can turn
+  it off with `default-features = false`.
+
 ### Changed
 
 - `Password` wipes its bytes when dropped (`zeroize`), and its `Debug` output is `Password([REDACTED])`.

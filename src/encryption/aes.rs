@@ -180,7 +180,11 @@ fn get_aes_key(
                 "AES num_cycles_power exceeds the supported maximum",
             ));
         }
-        Zeroizing::new(derive_key_cached(num_cycles_power, &salt, password))
+        #[cfg(feature = "key-cache")]
+        let key = derive_key_cached(num_cycles_power, &salt, password);
+        #[cfg(not(feature = "key-cache"))]
+        let key = derive_key(num_cycles_power, &salt, password);
+        Zeroizing::new(key)
     };
     Ok((aes_key, iv))
 }
@@ -209,6 +213,11 @@ fn derive_key(num_cycles_power: u8, salt: &[u8], password: &[u8]) -> [u8; 32] {
 }
 
 /// Cache last derived key.
+///
+/// The cached key, and a SHA-256 of the salt and password it came from, stay in a
+/// `static` for the life of the process: they are never dropped, so never wiped. The
+/// `key-cache` feature (on by default) enables it; without it every call derives afresh.
+#[cfg(feature = "key-cache")]
 fn derive_key_cached(num_cycles_power: u8, salt: &[u8], password: &[u8]) -> [u8; 32] {
     static KEY_CACHE: std::sync::Mutex<Option<([u8; 32], [u8; 32])>> = std::sync::Mutex::new(None);
 
@@ -388,7 +397,7 @@ impl<W: Write> Write for Aes256Sha256Encoder<W> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "key-cache"))]
 mod key_derivation_tests {
     use super::*;
 
