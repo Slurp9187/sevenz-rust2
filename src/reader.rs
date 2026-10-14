@@ -6,6 +6,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     num::NonZeroUsize,
     rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crc32fast::Hasher;
@@ -15,7 +16,24 @@ use crate::{
     ByteReader, Password, archive::*, bitset::BitSet, block::*, decoder::add_decoder, error::Error,
 };
 
-const MAX_MEM_LIMIT_KB: usize = usize::MAX / 1024;
+/// The most memory, in KiB, a decoder may take: the encoded header's and every
+/// block's. Unlimited unless [`set_max_mem_limit_kb`] lowers it. One setting for
+/// the process, read at each decoder, so a host that reads untrusted archives sets
+/// it once, before the first read.
+static MAX_MEM_LIMIT_KB: AtomicUsize = AtomicUsize::new(usize::MAX / 1024);
+
+/// Bound the memory every decoder may take, in KiB, for this process: an LZMA or
+/// LZMA2 dictionary, a PPMd model, and the decoded size of an encoded header. A
+/// decoder that would need more fails with [`Error::MaxMemLimited`] before it
+/// allocates. The default is no limit.
+pub fn set_max_mem_limit_kb(kb: usize) {
+    MAX_MEM_LIMIT_KB.store(kb, Ordering::Relaxed);
+}
+
+/// The current limit set by [`set_max_mem_limit_kb`].
+pub fn max_mem_limit_kb() -> usize {
+    MAX_MEM_LIMIT_KB.load(Ordering::Relaxed)
+}
 
 /// Upper bound for eagerly pre-allocating an output buffer from an archive-declared
 /// (untrusted) uncompressed size. The buffer still grows to the real size as data is
@@ -387,6 +405,14 @@ impl Archive {
                 next_header_size_int,
                 thread_count,
             )?;
+            // A decoded header past the memory limit is refused before it is read.
+            let buf_kb = buf_size / 1024;
+            if buf_kb > max_mem_limit_kb() as u64 {
+                return Err(Error::MaxMemLimited {
+                    max_kb: max_mem_limit_kb(),
+                    actaul_kb: usize::try_from(buf_kb).unwrap_or(usize::MAX),
+                });
+            }
             // Read the decoded header lazily instead of pre-allocating `buf_size` bytes:
             // a crafted encoded header can declare a huge unpack size, and `resize`
             // would allocate it all up front (OOM) before any data is produced. `take`
@@ -469,7 +495,7 @@ impl Archive {
                     block.get_unpack_size_at_index(index),
                     coder,
                     password,
-                    MAX_MEM_LIMIT_KB,
+                    max_mem_limit_kb(),
                     thread_count,
                 )?;
                 decoder = Box::new(next);
@@ -1404,7 +1430,7 @@ impl<R: Read + Seek> ArchiveReader<R> {
                 block.get_unpack_size_at_index(index),
                 coder,
                 password,
-                MAX_MEM_LIMIT_KB,
+                max_mem_limit_kb(),
                 thread_count,
             )?;
             decoder = Box::new(next);
@@ -1601,7 +1627,7 @@ impl<R: Read + Seek> ArchiveReader<R> {
                 uncompressed_len,
                 coder,
                 password,
-                MAX_MEM_LIMIT_KB,
+                max_mem_limit_kb(),
                 thread_count,
             )?;
             return Ok(Box::new(decoder));

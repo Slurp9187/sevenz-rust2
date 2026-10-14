@@ -68,7 +68,7 @@ pub use archive::*;
 pub use block::*;
 pub use encryption::Password;
 pub use error::Error;
-pub use reader::{ArchiveReader, BlockDecoder};
+pub use reader::{ArchiveReader, BlockDecoder, max_mem_limit_kb, set_max_mem_limit_kb};
 pub use time::NtTime;
 #[cfg(all(feature = "compress", feature = "util", not(target_arch = "wasm32")))]
 pub use util::compress::*;
