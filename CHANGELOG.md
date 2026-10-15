@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `key-cache` feature, on by default, gating the cache of the last derived AES key. That cache lives in a `static`
+  for the life of the process and is never wiped; applications that hold passwords in memory with care can turn
+  it off with `default-features = false`.
+
+### Changed
+
+- `Password` wipes its bytes when dropped (`zeroize`), and its `Debug` output is `Password([REDACTED])`.
+  `AesEncoderOptions` inherits both through its `password` field.
+- The `aes256` feature enables `zeroize` in `aes`, `cbc` and `sha2`, so the AES key schedule, the IV and the
+  key-derivation hash state are wiped when dropped. The derived AES key is wiped after use.
+
 ### Fixed
 
 - Fix decoding large files under 32-bit systems
