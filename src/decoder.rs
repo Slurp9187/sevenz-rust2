@@ -98,6 +98,14 @@ pub fn add_decoder<I: Read>(
                 return Err(Error::Other("LZMA properties too short".into()));
             }
             let dict_size = get_lzma_dic_size(coder)?;
+            // LZMA's dictionary is set by the file, as LZMA2's is: held to the same limit.
+            let dict_kb = dict_size as usize / 1024;
+            if dict_kb > max_mem_limit_kb {
+                return Err(Error::MaxMemLimited {
+                    max_kb: max_mem_limit_kb,
+                    actaul_kb: dict_kb,
+                });
+            }
             let props = coder.properties[0];
             let lz = LzmaReader::new_with_props(input, uncompressed_len, props, dict_size, None)
                 .map_err(|e| Error::bad_password(e, !password.is_empty()))?;
