@@ -2,6 +2,9 @@ mod counting_writer;
 #[cfg(all(feature = "util", not(target_arch = "wasm32")))]
 mod lazy_file_reader;
 mod pack_info;
+mod raw_block;
+#[cfg(feature = "aes256")]
+mod rewrap;
 mod seq_reader;
 mod source_reader;
 mod unpack_info;
@@ -20,9 +23,15 @@ use crc32fast::Hasher;
 
 #[cfg(all(feature = "util", not(target_arch = "wasm32")))]
 pub(crate) use self::lazy_file_reader::LazyFileReader;
+#[cfg(feature = "aes256")]
+pub use self::rewrap::{NotRewrappable, read_inner_packed_stream};
 pub(crate) use self::seq_reader::SeqReader;
 pub use self::source_reader::SourceReader;
-use self::{pack_info::PackInfo, unpack_info::UnpackInfo};
+use self::{
+    pack_info::PackInfo,
+    raw_block::{first_pack_stream, pack_stream_span, raw_block_entries},
+    unpack_info::UnpackInfo,
+};
 use crate::{
     ArchiveEntry, AutoFinish, AutoFinisher, ByteWriter, Error,
     archive::*,
@@ -302,85 +311,18 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         source: &mut R,
         mut rename: impl FnMut(&ArchiveEntry) -> String,
     ) -> Result<&mut Self> {
+        const OP: &str = "push_raw_block";
         let block = archive
             .blocks
             .get(block_index)
-            .ok_or_else(|| Error::other(format!("push_raw_block: no block {block_index}")))?;
-        let map = &archive.stream_map;
-        // The stream map is only built along with the files, so an archive without a
-        // `FilesInfo` has blocks and no map of them.
-        let unmapped = || {
-            Error::other(format!(
-                "push_raw_block: block {block_index} is missing from the stream map"
-            ))
-        };
-
-        // Its sub-streams, which are its entries' sizes and CRCs.
-        let first_sub_stream = *map
-            .block_first_sub_stream_index
-            .get(block_index)
-            .ok_or_else(unmapped)?;
-        let sub_streams = first_sub_stream..first_sub_stream + block.num_unpack_sub_streams;
-        let info = archive.sub_streams_info.as_ref();
-        let mut sub_stream_sizes = Vec::with_capacity(sub_streams.len());
-        let mut sub_stream_crcs = Vec::with_capacity(sub_streams.len());
-        for index in sub_streams {
-            let crc = match info {
-                Some(info) if info.has_crc.contains(index) => info.crcs[index] as u32,
-                // A lone sub-stream may carry its CRC on the block instead.
-                _ if block.num_unpack_sub_streams == 1 && block.has_crc => block.crc as u32,
-                _ => {
-                    return Err(Error::other(format!(
-                        "push_raw_block: block {block_index} has an entry without a CRC"
-                    )));
-                }
-            };
-            sub_stream_crcs.push(crc);
-            sub_stream_sizes
-                .push(info.map_or(block.get_unpack_size(), |info| info.unpack_sizes[index]));
-        }
-
-        // Its entries, the files with data in it, in order. An empty entry between two of a
-        // solid block's may be mapped to it too, but it has no sub-stream there.
-        let entries: Vec<ArchiveEntry> = archive
-            .files
-            .iter()
-            .zip(&map.file_block_index)
-            .filter(|(entry, block)| entry.has_stream && **block == Some(block_index))
-            .map(|(entry, _)| ArchiveEntry {
-                name: rename(entry),
-                ..entry.clone()
-            })
-            .collect();
-        if entries.len() != block.num_unpack_sub_streams {
-            return Err(Error::other(format!(
-                "push_raw_block: block {block_index} has {} entries for {} sub-streams",
-                entries.len(),
-                block.num_unpack_sub_streams
-            )));
-        }
+            .ok_or_else(|| Error::other(format!("{OP}: no block {block_index}")))?;
+        let (sub_stream_sizes, sub_stream_crcs, entries) =
+            raw_block_entries(archive, block_index, &mut rename, OP)?;
 
         // Its packed streams, copied as they are.
-        let first_pack_stream = *map
-            .block_first_pack_stream_index
-            .get(block_index)
-            .ok_or_else(unmapped)?;
+        let first_pack_stream = first_pack_stream(archive, block_index, OP)?;
         for pack_stream in first_pack_stream..first_pack_stream + block.packed_streams.len() {
-            let (Some(&size), Some(&stream_offset)) = (
-                archive.pack_sizes.get(pack_stream),
-                map.pack_stream_offsets.get(pack_stream),
-            ) else {
-                return Err(unmapped());
-            };
-            // The header's offsets are not bounded when it is read.
-            let offset = SIGNATURE_HEADER_SIZE
-                .checked_add(archive.pack_pos)
-                .and_then(|offset| offset.checked_add(stream_offset))
-                .ok_or_else(|| {
-                    Error::other(format!(
-                        "push_raw_block: block {block_index} lies past the end of any file"
-                    ))
-                })?;
+            let (offset, size) = pack_stream_span(archive, block_index, pack_stream, OP)?;
             source.seek(std::io::SeekFrom::Start(offset))?;
             let copied = std::io::copy(&mut (&mut *source).take(size), &mut self.output)?;
             if copied != size {

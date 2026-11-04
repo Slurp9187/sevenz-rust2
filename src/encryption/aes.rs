@@ -129,7 +129,7 @@ impl<R: Read + Seek> Seek for Aes256Sha256Decoder<R> {
     }
 }
 
-fn get_aes_key(
+pub(crate) fn get_aes_key(
     properties: &[u8],
     password: &[u8],
 ) -> Result<(Zeroizing<[u8; 32]>, [u8; 16]), crate::Error> {
