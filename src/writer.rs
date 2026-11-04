@@ -174,12 +174,13 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             let mut compressed_len = 0;
             let mut compressed = CompressWrapWriter::new(&mut self.output, &mut compressed_len);
 
+            let content_methods = with_fresh_ivs(&self.content_methods);
             let mut more_sizes: Vec<Rc<Cell<usize>>> =
-                Vec::with_capacity(self.content_methods.len() - 1);
+                Vec::with_capacity(content_methods.len() - 1);
 
             let (crc, size) = {
                 let mut w =
-                    Self::create_writer(&self.content_methods, &mut compressed, &mut more_sizes)?;
+                    Self::create_writer(&content_methods, &mut compressed, &mut more_sizes)?;
                 let mut write_len = 0;
                 let mut w = CompressWrapWriter::new(&mut w, &mut write_len);
                 let mut buf = [0u8; 4096];
@@ -219,8 +220,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             sizes.extend(more_sizes.iter().map(|s| s.get() as u64));
             sizes.push(size as u64);
 
-            self.unpack_info
-                .add(self.content_methods.clone(), sizes, crc);
+            self.unpack_info.add(content_methods, sizes, crc);
 
             self.files.push(entry);
             return Ok(self.files.last().unwrap());
@@ -419,11 +419,11 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         assert_eq!(r.reader_len(), entries.len());
         let mut compressed_len = 0;
         let mut compressed = CompressWrapWriter::new(&mut self.output, &mut compressed_len);
-        let content_methods = &self.content_methods;
+        let content_methods = with_fresh_ivs(&self.content_methods);
         let mut more_sizes: Vec<Rc<Cell<usize>>> = Vec::with_capacity(content_methods.len() - 1);
 
         let (crc, size) = {
-            let mut w = Self::create_writer(content_methods, &mut compressed, &mut more_sizes)?;
+            let mut w = Self::create_writer(&content_methods, &mut compressed, &mut more_sizes)?;
             let mut write_len = 0;
             let mut w = CompressWrapWriter::new(&mut w, &mut write_len);
             let mut buf = [0u8; 4096];
@@ -484,7 +484,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         sizes.push(size as u64);
 
         self.unpack_info.add_multiple(
-            content_methods.clone(),
+            content_methods,
             sizes,
             crc,
             entries.len() as u64,
@@ -586,7 +586,8 @@ impl<W: Write + Seek> ArchiveWriter<W> {
 
         methods.push(EncoderConfiguration::new(EncoderMethod::LZMA));
 
-        let methods = Arc::new(methods);
+        // The header is one more stream under the same key: an IV of its own too.
+        let methods = with_fresh_ivs(&Arc::new(methods));
 
         let mut encoded_data = Vec::with_capacity(size as usize / 2);
 
@@ -870,6 +871,34 @@ impl PreparedBlock {
     }
 }
 
+/// `methods` with a fresh random IV in every AES coder, for one block (or the header).
+///
+/// Every block of an archive is AES-256-CBC under the same key (one password, one salt), so each
+/// needs an IV of its own: under a shared IV, two blocks whose packed streams begin with the same
+/// 16 bytes begin with the same ciphertext, which shows a reader without the password where the
+/// archive repeats itself. `AesEncoderOptions` draws its IV once, when it is made, and the writer
+/// used to reuse that one options value for every block and the header. The salt is kept, so the
+/// key stays one key.
+fn with_fresh_ivs(methods: &Arc<Vec<EncoderConfiguration>>) -> Arc<Vec<EncoderConfiguration>> {
+    #[cfg(feature = "aes256")]
+    if methods.iter().any(|m| {
+        matches!(
+            m.options,
+            Some(crate::encoder_options::EncoderOptions::Aes(_))
+        )
+    }) {
+        let mut fresh = (**methods).clone();
+        for method in &mut fresh {
+            if let Some(crate::encoder_options::EncoderOptions::Aes(options)) = &mut method.options
+            {
+                getrandom::fill(&mut options.iv).expect("Can't generate IV");
+            }
+        }
+        return Arc::new(fresh);
+    }
+    Arc::clone(methods)
+}
+
 /// Compress `entries` into one solid block using `methods`, without a writer.
 ///
 /// Mirrors the encoding half of [`ArchiveWriter::push_archive_entries`], writing into memory instead
@@ -885,6 +914,8 @@ pub fn prepare_block<R: Read>(
     if methods.is_empty() {
         return Err(Error::other("prepare_block: `methods` must not be empty"));
     }
+    // Callers pass one `methods` for every block they prepare.
+    let methods = with_fresh_ivs(&methods);
 
     let mut entries = entries;
     let mut r = SeqReader::new(reader);

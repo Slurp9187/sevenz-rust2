@@ -1939,3 +1939,130 @@ mod tests {
         assert_eq!(buf, [0x5A; 16]);
     }
 }
+
+/// Every AES stream the writer makes has an IV of its own: each block's and the encoded
+/// header's. A test in the reader because it parses the encoded header's own streams info,
+/// which `Archive::read` decodes and does not keep.
+#[cfg(all(test, feature = "aes256", feature = "compress"))]
+mod per_block_iv_tests {
+    use std::io::Cursor;
+
+    use super::*;
+    use crate::{
+        ArchiveEntry, ArchiveWriter, EncoderMethod, SourceReader,
+        encoder_options::AesEncoderOptions,
+    };
+
+    /// The IV in an AES coder's properties (the layout `get_aes_key` reads).
+    fn iv_of(coder: &Coder) -> Vec<u8> {
+        let p = coder.properties();
+        let iv_size = (((p[0] >> 6) & 1) + (p[1] & 15)) as usize;
+        let salt_size = (((p[0] >> 7) & 1) + (p[1] >> 4)) as usize;
+        p[2 + salt_size..2 + salt_size + iv_size].to_vec()
+    }
+
+    fn aes_ivs(archive: &Archive) -> Vec<Vec<u8>> {
+        archive
+            .blocks
+            .iter()
+            .flat_map(|b| &b.coders)
+            .filter(|c| c.encoder_method_id() == EncoderMethod::ID_AES256_SHA256)
+            .map(iv_of)
+            .collect()
+    }
+
+    /// Bytes no compressor shrinks, so the packed stream begins with them as LZMA2 sees them.
+    fn same_content() -> Vec<u8> {
+        (0..4096u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect()
+    }
+
+    /// An archive of three blocks written entry by entry (two of them alike), one solid block
+    /// of two entries, and its header encrypted.
+    fn encrypted_archive() -> Vec<u8> {
+        let password = Password::from("per-block-iv");
+        let mut out = Vec::new();
+        let mut writer = ArchiveWriter::new(Cursor::new(&mut out)).unwrap();
+        writer.set_content_methods(vec![
+            AesEncoderOptions::new(password).into(),
+            EncoderMethod::LZMA2.into(),
+        ]);
+        writer.set_encrypt_header(true);
+        for name in ["a", "b"] {
+            writer
+                .push_archive_entry(
+                    ArchiveEntry::new_file(name),
+                    Some(same_content().as_slice()),
+                )
+                .unwrap();
+        }
+        writer
+            .push_archive_entry(ArchiveEntry::new_file("c"), Some(b"other".as_slice()))
+            .unwrap();
+        writer
+            .push_archive_entries(
+                vec![ArchiveEntry::new_file("d"), ArchiveEntry::new_file("e")],
+                vec![
+                    SourceReader::new(b"solid one".as_slice()),
+                    SourceReader::new(b"solid two".as_slice()),
+                ],
+            )
+            .unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    /// The streams info the encoded header is described by, before it is decoded.
+    fn encoded_header_info(bytes: &[u8]) -> Archive {
+        let offset = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
+        let size = u64::from_le_bytes(bytes[20..28].try_into().unwrap());
+        let start = (SIGNATURE_HEADER_SIZE + offset) as usize;
+        let mut header = &bytes[start..start + size as usize];
+        assert_eq!(header.read_u8().unwrap(), K_ENCODED_HEADER);
+        let mut info = Archive::default();
+        Archive::read_streams_info(&mut header, &mut info, size as usize).unwrap();
+        info
+    }
+
+    /// Falsify: make `with_fresh_ivs` return `Arc::clone(methods)` unchanged; every IV is then
+    /// the one `AesEncoderOptions::new` drew, and blocks "a" and "b" begin alike.
+    #[test]
+    fn every_block_and_the_header_has_an_iv_of_its_own() {
+        let bytes = encrypted_archive();
+        let archive =
+            Archive::read(&mut Cursor::new(&bytes), &Password::from("per-block-iv")).unwrap();
+        assert_eq!(archive.blocks.len(), 4);
+
+        let mut ivs = aes_ivs(&archive);
+        assert_eq!(ivs.len(), 4, "every block is encrypted");
+        let header_ivs = aes_ivs(&encoded_header_info(&bytes));
+        assert_eq!(header_ivs.len(), 1, "the header is encrypted");
+        ivs.extend(header_ivs);
+        let mut distinct = ivs.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), ivs.len(), "an IV is shared: {ivs:02x?}");
+
+        // What a shared IV showed: two blocks packed from the same bytes began with the same
+        // ciphertext. Under IVs of their own they do not.
+        let packed = |block: usize| {
+            let stream = archive.stream_map.block_first_pack_stream_index[block];
+            let at = (SIGNATURE_HEADER_SIZE
+                + archive.pack_pos
+                + archive.stream_map.pack_stream_offsets[stream]) as usize;
+            &bytes[at..at + 16]
+        };
+        assert_ne!(
+            packed(0),
+            packed(1),
+            "alike blocks begin with alike ciphertext"
+        );
+
+        // And the archive still reads back whole.
+        let mut reader =
+            ArchiveReader::new(Cursor::new(&bytes), Password::from("per-block-iv")).unwrap();
+        assert_eq!(reader.read_file("a").unwrap(), same_content());
+        assert_eq!(reader.read_file("e").unwrap(), b"solid two");
+    }
+}
