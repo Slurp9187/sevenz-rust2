@@ -9,12 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ArchiveWriter::push_rewrapped_block`: copy a block of an existing archive with its AES layer taken off and,
+  optionally, a new one put on, without decoding it. The packed stream beneath the AES layer is carried across
+  byte for byte, so a password change, encrypting a plain archive or decrypting an encrypted one costs a read,
+  the AES pass and a write instead of a decode and a recompression. Each block gets a fresh IV. The stream
+  passes in 64 KiB chunks, each decrypted or encrypted in one call and wiped after.
+- `read_inner_packed_stream`, for checking a rewrap: a block's packed stream as it lies beneath its AES layer.
+- `Block::rewrappable` and `NotRewrappable`: a block reading more than one packed stream (BCJ2), a coder with
+  more than one stream in or out, or an AES coder that is not on the packed stream is refused by name.
+- A wrong source password is not detected by a rewrap: AES has no check of its own. Decode the result
+  before trusting it.
+
 - `key-cache` feature, on by default, gating the cache of the last derived AES key. That cache lives in a `static`
   for the life of the process and is never wiped; applications that hold passwords in memory with care can turn
   it off with `default-features = false`.
 
 ### Changed
 
+- The encoded header is compressed with an LZMA dictionary its own size (a power of two, 4 KiB to 8 MiB),
+  not the default 8 MiB, whose match finder took about 94 MiB to compress a header of a few hundred bytes.
+  Readers allocate the smaller dictionary too.
 - `Password` wipes its bytes when dropped (`zeroize`), and its `Debug` output is `Password([REDACTED])`.
   `AesEncoderOptions` inherits both through its `password` field.
 - The `aes256` feature enables `zeroize` in `aes`, `cbc` and `sha2`, so the AES key schedule, the IV and the
