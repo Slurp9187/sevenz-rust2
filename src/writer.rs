@@ -526,7 +526,16 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             }
         }
 
-        methods.push(EncoderConfiguration::new(EncoderMethod::LZMA));
+        // A dictionary the size of the header, not LZMA's default 8 MiB: the encoder's match
+        // finder is sized from the dictionary (about 94 MiB at 8 MiB, to compress a header of a
+        // few KiB), and so is the dictionary a reader allocates to decode it. A dictionary as
+        // large as the input compresses it as well as any larger one.
+        let mut header_lzma = crate::encoder_options::LzmaOptions::default();
+        header_lzma.set_dictionary_size(header_dictionary_size(size));
+        methods.push(
+            EncoderConfiguration::new(EncoderMethod::LZMA)
+                .with_options(crate::encoder_options::EncoderOptions::Lzma(header_lzma)),
+        );
 
         // The header is one more stream under the same key: an IV of its own too.
         let methods = with_fresh_ivs(&Arc::new(methods));
@@ -817,6 +826,14 @@ impl PreparedBlock {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+/// The LZMA dictionary for a header of `len` bytes: the next power of two, at least LZMA's
+/// smallest (4 KiB) and at most its default (8 MiB).
+fn header_dictionary_size(len: u64) -> u32 {
+    const MIN: u64 = 4 * 1024;
+    const MAX: u64 = 8 * 1024 * 1024;
+    len.clamp(MIN, MAX).next_power_of_two().min(MAX) as u32
 }
 
 /// `methods` with a fresh random IV in every AES coder, for one block (or the header).

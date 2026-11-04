@@ -2160,6 +2160,29 @@ mod per_block_iv_tests {
         info
     }
 
+    /// The encoded header is compressed with a dictionary its own size, not LZMA's default
+    /// 8 MiB, so neither its encoder's match finder nor a reader's dictionary is sized for
+    /// 8 MiB to hold a header of a few hundred bytes.
+    ///
+    /// Falsify: push `EncoderConfiguration::new(EncoderMethod::LZMA)` with no options in
+    /// `write_encoded_header`; the dictionary is then 8 MiB.
+    #[test]
+    fn the_header_is_compressed_with_a_dictionary_its_own_size() {
+        let bytes = encrypted_archive();
+        let info = encoded_header_info(&bytes);
+        let lzma = info
+            .blocks
+            .iter()
+            .flat_map(|b| &b.coders)
+            .find(|c| c.encoder_method_id() == EncoderMethod::ID_LZMA)
+            .expect("the header is LZMA compressed");
+        let p = lzma.properties();
+        let dictionary = u32::from_le_bytes([p[1], p[2], p[3], p[4]]);
+        assert_eq!(dictionary, 4 * 1024, "a header of a few hundred bytes");
+        // And it still reads.
+        Archive::read(&mut Cursor::new(&bytes), &Password::from("per-block-iv")).unwrap();
+    }
+
     /// Falsify: make `with_fresh_ivs` return `Arc::clone(methods)` unchanged; every IV is then
     /// the one `AesEncoderOptions::new` drew, and blocks "a" and "b" begin alike.
     #[test]
