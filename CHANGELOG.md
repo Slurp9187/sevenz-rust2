@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The encoded header is compressed with an LZMA dictionary its own size (a power of two, 4 KiB to 8 MiB),
+  not the default 8 MiB, whose match finder took about 94 MiB to compress a header of a few hundred bytes.
+  Readers allocate the smaller dictionary too.
 - `Password` wipes its bytes when dropped (`zeroize`), and its `Debug` output is `Password([REDACTED])`.
   `AesEncoderOptions` inherits both through its `password` field.
 - The `aes256` feature enables `zeroize` in `aes`, `cbc` and `sha2`, so the AES key schedule, the IV and the
