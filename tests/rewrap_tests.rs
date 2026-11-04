@@ -237,6 +237,28 @@ fn a_wrong_password_rewraps_garbage_that_only_decoding_refuses() {
     );
 }
 
+/// A block encrypted and not compressed (AES alone) decrypts to its entries stored, under a
+/// COPY coder, and changes its password as one coder.
+///
+/// Falsify: drop the COPY coder `push_rewrapped_block` adds to an empty chain; the decrypted
+/// archive's blocks then have no coders and nothing reads.
+#[test]
+fn an_aes_only_block_decrypts_to_a_stored_one() {
+    let encrypted = source_archive(Vec::new(), Some("pw"));
+    let want = entries(&encrypted, "pw");
+    let (plain, _) = rewrap(&encrypted, "pw", None);
+    assert_eq!(entries(&plain, ""), want);
+    let read = Archive::read(&mut Cursor::new(&plain), &Password::empty()).unwrap();
+    assert!(
+        read.blocks
+            .iter()
+            .all(|b| b.coders.len() == 1
+                && b.coders[0].encoder_method_id() == EncoderMethod::ID_COPY)
+    );
+    let (rotated, _) = rewrap(&encrypted, "pw", Some("new"));
+    assert_eq!(entries(&rotated, "new"), want);
+}
+
 /// A chain of two coders keeps both, the AES layer going on beneath them.
 #[test]
 fn a_filter_chain_keeps_its_coders() {

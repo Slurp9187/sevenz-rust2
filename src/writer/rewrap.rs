@@ -313,18 +313,29 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             .add_stream(packed_len, Some(packed_crc.finalize()));
 
         // The chain, from the packed stream out: the new AES coder, then the rest.
+        let coder = |method: EncoderMethod, properties: Vec<u8>| {
+            let mut coder = Coder::default();
+            let id = method.id();
+            coder.id_size = id.len();
+            coder.decompression_method_id_mut().copy_from_slice(id);
+            coder.num_in_streams = 1;
+            coder.num_out_streams = 1;
+            coder.properties = properties;
+            coder
+        };
         let mut coders: Vec<(Coder, u64)> = Vec::with_capacity(rest.len() + 1);
         if let Some(options) = &wrap {
-            let mut aes = Coder::default();
-            let id = EncoderMethod::AES256_SHA256.id();
-            aes.id_size = id.len();
-            aes.decompression_method_id_mut().copy_from_slice(id);
-            aes.num_in_streams = 1;
-            aes.num_out_streams = 1;
-            aes.properties = options.properties().to_vec();
-            coders.push((aes, inner_size));
+            coders.push((
+                coder(EncoderMethod::AES256_SHA256, options.properties().to_vec()),
+                inner_size,
+            ));
         }
         coders.extend(rest);
+        // A block that was AES alone, decrypted, is its entries stored: a block needs a coder,
+        // and 7-Zip writes a stored one as COPY.
+        if coders.is_empty() {
+            coders.push((coder(EncoderMethod::COPY, Vec::new()), inner_size));
+        }
         let n = coders.len();
         let rewrapped = Block {
             coders: coders.iter().map(|(c, _)| c.clone()).collect(),
