@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `aes256` feature enables `zeroize` in `aes`, `cbc` and `sha2`, so the AES key schedule, the IV and the
   key-derivation hash state are wiped when dropped. The derived AES key is wiped after use.
 
+### Fixed
+
+- Give every AES-encrypted block, and the encrypted header, an IV of its own. The writer drew one IV when
+  its `AesEncoderOptions` was made and reused it for every block and the header, all under one key, so
+  two blocks whose packed streams began with the same 16 bytes began with the same ciphertext (measured:
+  two entries of the same 4 KiB, written one block each). Each block's coder now gets a fresh random IV,
+  as `push_archive_entry`, `push_archive_entries`, `prepare_block` and the encoded header write it; the
+  salt, and so the key, is unchanged. Archives written before still read: the IV is in each coder's
+  properties. Tested by `every_block_and_the_header_has_an_iv_of_its_own`; 7-Zip 26 tests the result OK.
+
 ## 0.24.2 - 2026-10-30
 
 ### Fixed
